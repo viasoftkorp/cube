@@ -569,6 +569,63 @@ describe('Cube RBAC Engine', () => {
     });
   });
 
+  describe('RBAC data masking via SQL API — split policies by group', () => {
+    test('Sensitive Data Access: additional unmask policies + masked fallback', async () => {
+      const connection = await createPostgresClient(
+        'masking_sensitive_group',
+        'masking_sensitive_group_password'
+      );
+      try {
+        const res = await connection.query(
+          'SELECT id, address_line_1 FROM masking_policy_split_test ORDER BY id'
+        );
+        expect(res.rows.length).toBe(6);
+        const rowsById = new Map(res.rows.map((row) => [Number(row.id), row.address_line_1]));
+
+        // Unmasked by RESEARCH/DEMO policies
+        expect(rowsById.get(1)).toBe('100 Main St');
+        expect(rowsById.get(2)).toBe('200 Main St');
+        // Unmasked by region_lock_data = 0 policy (Sensitive-only)
+        expect(rowsById.get(3)).toBe('300 Main St');
+        // Unmasked by data_region policy (APAC)
+        expect(rowsById.get(4)).toBe('400 Main St');
+        // Fallback masking for remaining rows
+        expect(rowsById.get(5)).toBe('***MASKED***');
+        expect(rowsById.get(6)).toBe('***MASKED***');
+      } finally {
+        await connection.end();
+      }
+    });
+
+    test('Very Sensitive Data Access: no region_lock unmask policy', async () => {
+      const connection = await createPostgresClient(
+        'masking_very_sensitive_group',
+        'masking_very_sensitive_group_password'
+      );
+      try {
+        const res = await connection.query(
+          'SELECT id, address_line_1 FROM masking_policy_split_test ORDER BY id'
+        );
+        expect(res.rows.length).toBe(6);
+        const rowsById = new Map(res.rows.map((row) => [Number(row.id), row.address_line_1]));
+
+        // Unmasked by shared RESEARCH/DEMO policies
+        expect(rowsById.get(1)).toBe('100 Main St');
+        expect(rowsById.get(2)).toBe('200 Main St');
+        // region_lock_data = 0 does not unmask for Very Sensitive
+        expect(rowsById.get(3)).toBe('***MASKED***');
+        // No APAC match for EMEA user
+        expect(rowsById.get(4)).toBe('***MASKED***');
+        // Unmasked by data_region policy (EMEA)
+        expect(rowsById.get(5)).toBe('500 Main St');
+        // Fallback masking
+        expect(rowsById.get(6)).toBe('***MASKED***');
+      } finally {
+        await connection.end();
+      }
+    });
+  });
+
   describe('RBAC data masking via REST API', () => {
     let maskingViewerClient: CubeApi;
     let maskingFullClient: CubeApi;

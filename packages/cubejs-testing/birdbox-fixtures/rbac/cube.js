@@ -186,6 +186,46 @@ module.exports = {
         },
       };
     }
+    // User for split masking policy tests - Sensitive Data Access group
+    if (user === 'masking_sensitive_group') {
+      if (password && password !== 'masking_sensitive_group_password') {
+        throw new Error(`Password doesn't match for ${user}`);
+      }
+      return {
+        password,
+        superuser: false,
+        securityContext: {
+          auth: {
+            username: 'masking_sensitive_group',
+            userAttributes: {
+              data_region: 'APAC',
+            },
+            roles: [],
+            groups: ['Sensitive Data Access'],
+          },
+        },
+      };
+    }
+    // User for split masking policy tests - Very Sensitive Data Access group
+    if (user === 'masking_very_sensitive_group') {
+      if (password && password !== 'masking_very_sensitive_group_password') {
+        throw new Error(`Password doesn't match for ${user}`);
+      }
+      return {
+        password,
+        superuser: false,
+        securityContext: {
+          auth: {
+            username: 'masking_very_sensitive_group',
+            userAttributes: {
+              data_region: 'EMEA',
+            },
+            roles: [],
+            groups: ['Very Sensitive Data Access'],
+          },
+        },
+      };
+    }
     throw new Error(`User "${user}" doesn't exist`);
   }
 };
