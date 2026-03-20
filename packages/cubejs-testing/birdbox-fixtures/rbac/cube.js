@@ -195,6 +195,8 @@ module.exports = {
         password,
         superuser: false,
         securityContext: {
+          access_group: 'Sensitive Data Access',
+          data_region: 'APAC',
           auth: {
             username: 'masking_sensitive_group',
             userAttributes: {
@@ -215,6 +217,8 @@ module.exports = {
         password,
         superuser: false,
         securityContext: {
+          access_group: 'Very Sensitive Data Access',
+          data_region: 'EMEA',
           auth: {
             username: 'masking_very_sensitive_group',
             userAttributes: {
