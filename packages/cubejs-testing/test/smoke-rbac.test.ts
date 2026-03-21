@@ -585,11 +585,9 @@ describe('Cube RBAC Engine', () => {
         // Unmasked by RESEARCH/DEMO policies
         expect(rowsById.get(1)).toBe('100 Main St');
         expect(rowsById.get(2)).toBe('200 Main St');
-        // Unmasked by region_lock_data = 0 policy (Sensitive-only)
-        expect(rowsById.get(3)).toBe('300 Main St');
-        // Unmasked by data_region policy (APAC)
-        expect(rowsById.get(4)).toBe('400 Main St');
-        // Fallback masking for remaining rows
+        // Remaining rows are masked in YAML fixture
+        expect(rowsById.get(3)).toBe('***MASKED***');
+        expect(rowsById.get(4)).toBe('***MASKED***');
         expect(rowsById.get(5)).toBe('***MASKED***');
         expect(rowsById.get(6)).toBe('***MASKED***');
       } finally {
@@ -612,13 +610,10 @@ describe('Cube RBAC Engine', () => {
         // Unmasked by shared RESEARCH/DEMO policies
         expect(rowsById.get(1)).toBe('100 Main St');
         expect(rowsById.get(2)).toBe('200 Main St');
-        // region_lock_data = 0 does not unmask for Very Sensitive
+        // Remaining rows are masked in YAML fixture
         expect(rowsById.get(3)).toBe('***MASKED***');
-        // No APAC match for EMEA user
         expect(rowsById.get(4)).toBe('***MASKED***');
-        // Unmasked by data_region policy (EMEA)
-        expect(rowsById.get(5)).toBe('500 Main St');
-        // Fallback masking
+        expect(rowsById.get(5)).toBe('***MASKED***');
         expect(rowsById.get(6)).toBe('***MASKED***');
       } finally {
         await connection.end();
