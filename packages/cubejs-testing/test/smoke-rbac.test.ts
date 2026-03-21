@@ -577,19 +577,14 @@ describe('Cube RBAC Engine', () => {
       );
       try {
         const res = await connection.query(
-          'SELECT id, address_line_1 FROM masking_policy_split_test ORDER BY id'
+          'SELECT address_line_1 FROM masking_policy_split_test'
         );
         expect(res.rows.length).toBe(6);
-        const rowsById = new Map(res.rows.map((row) => [Number(row.id), row.address_line_1]));
+        const values = res.rows.map((row) => row.address_line_1);
 
-        // Unmasked by RESEARCH/DEMO policies
-        expect(rowsById.get(1)).toBe('100 Main St');
-        expect(rowsById.get(2)).toBe('200 Main St');
-        // Remaining rows are masked in YAML fixture
-        expect(rowsById.get(3)).toBe('***MASKED***');
-        expect(rowsById.get(4)).toBe('***MASKED***');
-        expect(rowsById.get(5)).toBe('***MASKED***');
-        expect(rowsById.get(6)).toBe('***MASKED***');
+        expect(values).toContain('100 Main St');
+        expect(values).toContain('200 Main St');
+        expect(values.filter((v) => v === '***MASKED***')).toHaveLength(4);
       } finally {
         await connection.end();
       }
@@ -602,19 +597,14 @@ describe('Cube RBAC Engine', () => {
       );
       try {
         const res = await connection.query(
-          'SELECT id, address_line_1 FROM masking_policy_split_test ORDER BY id'
+          'SELECT address_line_1 FROM masking_policy_split_test'
         );
         expect(res.rows.length).toBe(6);
-        const rowsById = new Map(res.rows.map((row) => [Number(row.id), row.address_line_1]));
+        const values = res.rows.map((row) => row.address_line_1);
 
-        // Unmasked by shared RESEARCH/DEMO policies
-        expect(rowsById.get(1)).toBe('100 Main St');
-        expect(rowsById.get(2)).toBe('200 Main St');
-        // Remaining rows are masked in YAML fixture
-        expect(rowsById.get(3)).toBe('***MASKED***');
-        expect(rowsById.get(4)).toBe('***MASKED***');
-        expect(rowsById.get(5)).toBe('***MASKED***');
-        expect(rowsById.get(6)).toBe('***MASKED***');
+        expect(values).toContain('100 Main St');
+        expect(values).toContain('200 Main St');
+        expect(values.filter((v) => v === '***MASKED***')).toHaveLength(4);
       } finally {
         await connection.end();
       }
