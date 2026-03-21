@@ -36,9 +36,9 @@ cube('masking_policy_split_test', {
         sql: `
           CASE
             WHEN ${CUBE}.data_security_field IN ('RESEARCH', 'DEMO') THEN ${CUBE}.address_line_1
-            WHEN '${SECURITY_CONTEXT.access_group.unsafeValue()}' = 'Sensitive Data Access'
+            WHEN ${SECURITY_CONTEXT.access_group.filter((accessGroup) => `${accessGroup} = 'Sensitive Data Access'`)}
                  AND ${CUBE}.region_lock_data = 0 THEN ${CUBE}.address_line_1
-            WHEN ${CUBE}.data_security_field = '${SECURITY_CONTEXT.data_region.unsafeValue()}'
+            WHEN ${SECURITY_CONTEXT.data_region.filter(`${CUBE}.data_security_field`)}
               THEN ${CUBE}.address_line_1
             ELSE '***MASKED***'
           END
