@@ -16,6 +16,8 @@ use crate::planner::query_tools::QueryTools;
 use crate::planner::Case;
 use crate::planner::CaseSwitchDefinition;
 use crate::planner::CaseSwitchItem;
+use crate::planner::MultiStageFilter;
+use crate::planner::MultiStageFilterMode;
 use crate::planner::GranularityHelper;
 use crate::planner::MeasureKind;
 use crate::planner::MemberSymbol;
@@ -23,12 +25,17 @@ use crate::planner::QueryProperties;
 use cubenativeutils::CubeError;
 use indexmap::IndexMap;
 use itertools::Itertools;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
 pub struct MultiStageQueryPlanner {
     query_tools: Rc<QueryTools>,
     query_properties: Rc<QueryProperties>,
+    // The initial multi-stage CTE state, set on entry to `plan_queries` and
+    // used by `mode: fixed` filter directives to reset accumulated state back
+    // to root regardless of the current node's mutations.
+    root_state: RefCell<Option<Rc<QueryProperties>>>,
 }
 
 impl MultiStageQueryPlanner {
@@ -36,7 +43,16 @@ impl MultiStageQueryPlanner {
         Self {
             query_tools,
             query_properties,
+            root_state: RefCell::new(None),
         }
+    }
+
+    fn root_state(&self) -> Rc<QueryProperties> {
+        self.root_state
+            .borrow()
+            .as_ref()
+            .expect("root_state must be initialized in plan_queries before use")
+            .clone()
     }
 
     pub fn plan_queries(&self, cte_state: &mut CteState) -> Result<(), CubeError> {
@@ -71,6 +87,7 @@ impl MultiStageQueryPlanner {
             .segments(self.query_properties.segments().clone())
             .order_by(Some(vec![]))
             .build()?;
+        *self.root_state.borrow_mut() = Some(state.clone());
 
         let mut resolved_multi_stage_dimensions = HashSet::new();
 
@@ -117,16 +134,16 @@ impl MultiStageQueryPlanner {
                 _ => MultiStageInodeMemberType::Aggregate,
             };
 
-            let time_shift = measure.time_shift().clone();
+            let time_shift = measure.time_shift().cloned();
 
             let is_ungrupped = match &member_type {
                 MultiStageInodeMemberType::Rank | MultiStageInodeMemberType::Calculate => true,
                 _ => self.query_properties.ungrouped(),
             };
 
-            let reduce_by = measure.reduce_by().clone().unwrap_or_default();
-            let add_group_by = measure.add_group_by().clone().unwrap_or_default();
-            let group_by = measure.group_by().clone();
+            let reduce_by = measure.reduce_by().cloned().unwrap_or_default();
+            let add_group_by = measure.add_group_by().cloned().unwrap_or_default();
+            let group_by = measure.group_by().cloned();
             (
                 MultiStageInodeMember::new(
                     member_type,
@@ -139,7 +156,7 @@ impl MultiStageQueryPlanner {
             )
         } else {
             let add_group_by = if let Ok(dimension) = base_member.as_dimension() {
-                dimension.add_group_by().clone().unwrap_or_default()
+                dimension.add_group_by().cloned().unwrap_or_default()
             } else {
                 vec![]
             };
@@ -384,18 +401,30 @@ impl MultiStageQueryPlanner {
                 }
             }
 
-            let new_state = if !dimensions_to_add.is_empty()
+            let directive_filter = multi_stage_filter_directive(&member);
+
+            let needs_new_state = !dimensions_to_add.is_empty()
                 || multi_stage_member.time_shift().is_some()
                 || state.has_filters_for_member(&member_name)
-            {
-                let mut new_state = state.as_ref().clone();
+                || directive_filter.is_some();
+
+            let new_state = if needs_new_state {
+                let mut new_state = match directive_filter.as_ref().map(|f| &f.mode) {
+                    Some(MultiStageFilterMode::Fixed) => self.root_state().as_ref().clone(),
+                    Some(MultiStageFilterMode::Relative) | None => state.as_ref().clone(),
+                };
+
+                if let Some(filter) = &directive_filter {
+                    apply_filter_directive_to_state(filter, &mut new_state);
+                }
+
                 if !dimensions_to_add.is_empty() {
                     new_state.add_dimensions(dimensions_to_add.clone());
                 }
                 if let Some(time_shift) = multi_stage_member.time_shift() {
                     new_state.add_time_shifts(time_shift.clone())?;
                 }
-                if state.has_filters_for_member(&member_name) {
+                if new_state.has_filters_for_member(&member_name) {
                     new_state.remove_filter_for_member(&member_name);
                 }
                 Rc::new(new_state)
@@ -800,5 +829,74 @@ impl MultiStageQueryPlanner {
         }
 
         Ok((Rc::new(new_state), new_time_dimension))
+    }
+}
+
+fn multi_stage_filter_directive(member: &Rc<MemberSymbol>) -> Option<MultiStageFilter> {
+    if let Ok(measure) = member.as_measure() {
+        return measure.multi_stage().and_then(|m| m.filter.clone());
+    }
+    if let Ok(dimension) = member.as_dimension() {
+        return dimension.multi_stage().and_then(|m| m.filter.clone());
+    }
+    None
+}
+
+//
+// TODO: known interaction gaps when `mode: fixed` resets to `root_state`
+// in chains. Both manifest only when a multi-stage member with `mode: fixed`
+// is computed as a dependency of another node that already mutated state.
+//
+// 1. Rolling window. `try_plan_rolling_window` builds `base_rolling_state`
+//    via `make_rolling_base_state` (extends date_range, swaps the time
+//    dimension, prunes time-dim entries from `dimensions`). When a nested
+//    multi-stage with `mode: fixed` is reached during recursion, it falls
+//    back to `self.root_state`, dropping those rolling-window-specific
+//    mutations — the leaf will read the original (narrow) date range while
+//    the outer rolling frame expects the extended one.
+//
+// 2. Switch-case pruning. `apply_static_filter_to_symbol` runs at the top
+//    of `make_queries_descriptions` against `state.dimensions_filters()` —
+//    the *inherited* filters, before this function. If the inherited set
+//    restricts the switch dimension, case branches are pruned at symbol
+//    level; the subsequent `mode: fixed` reset cannot un-prune them.
+//
+// `add_dimension_evaluator` wraps segment references into a `MemberExpression`
+// whose `full_name()` is prefixed with `expr:` (e.g. `expr:orders.completed`).
+// `BaseSegment::full_name()` carries the bare path (`orders.completed`). To make
+// `exclude`/`keep_only` match both forms, return the symbol's `full_name()`
+// alongside its `expr:`-stripped variant.
+fn filter_directive_match_names(symbol: &Rc<MemberSymbol>) -> Vec<String> {
+    let full = symbol.full_name();
+    if let Some(stripped) = full.strip_prefix("expr:") {
+        vec![full.clone(), stripped.to_string()]
+    } else {
+        vec![full]
+    }
+}
+
+fn apply_filter_directive_to_state(filter: &MultiStageFilter, state: &mut QueryProperties) {
+    if let Some(exclude) = &filter.exclude {
+        let names: Vec<String> = exclude
+            .iter()
+            .flat_map(|s| filter_directive_match_names(s))
+            .collect();
+        state.remove_filters_for_members(&names);
+    }
+    if let Some(keep_only) = &filter.keep_only {
+        let names: Vec<String> = keep_only
+            .iter()
+            .flat_map(|s| filter_directive_match_names(s))
+            .collect();
+        state.keep_only_filters_for_members(&names);
+    }
+    if !filter.include_dimension.is_empty() {
+        state.add_dimension_filters(filter.include_dimension.clone());
+    }
+    if !filter.include_time_dimension.is_empty() {
+        state.add_time_dimension_filters(filter.include_time_dimension.clone());
+    }
+    if !filter.include_measure.is_empty() {
+        state.add_measure_filters(filter.include_measure.clone());
     }
 }
