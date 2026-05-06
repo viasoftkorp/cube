@@ -396,7 +396,8 @@ pub(crate) fn build_compact_plan<'a>(
 /// Convert DB response row to the compact output
 pub fn get_compact_row(
     plan: &CompactPlan<'_>,
-    db_row: &[DBResponseValue],
+    db_data: &QueryResult,
+    row_idx: usize,
 ) -> Vec<DBResponsePrimitive> {
     let mut row: Vec<DBResponsePrimitive> = Vec::with_capacity(plan.entries.len());
 
@@ -406,7 +407,11 @@ pub fn get_compact_row(
                 column_index,
                 member_type,
             } => {
-                if let Some(value) = db_row.get(*column_index) {
+                if let Some(value) = db_data
+                    .data
+                    .get(*column_index)
+                    .and_then(|c| c.get(row_idx))
+                {
                     row.push(transform_value(value.clone(), member_type));
                 }
             }
@@ -606,12 +611,12 @@ fn build_columnar_plan<'a>(
 }
 
 /// Materialize [`TransformedData::Columnar`] columns directly from the
-/// row-major `cube_store_result.rows` matrix.
+/// column-major `cube_store_result.data` buffers.
 fn build_columnar_columns(
     plan: &[ColumnarColumnPlan<'_>],
-    rows: &[Vec<DBResponseValue>],
+    db_data: &QueryResult,
 ) -> Vec<Vec<DBResponsePrimitive>> {
-    let row_count = rows.len();
+    let row_count = db_data.row_count;
     let mut columns: Vec<Vec<DBResponsePrimitive>> =
         plan.iter().map(|_| Vec::with_capacity(row_count)).collect();
 
@@ -619,12 +624,15 @@ fn build_columnar_columns(
         let out = &mut columns[col_idx];
         match &plan_entry.source {
             ColumnarColumnSource::DbColumn { index } => {
-                for row in rows {
-                    let cell = row
-                        .get(*index)
-                        .cloned()
-                        .unwrap_or(DBResponseValue::Primitive(DBResponsePrimitive::Null));
-                    out.push(transform_value(cell, plan_entry.member_type));
+                if let Some(src_col) = db_data.data.get(*index) {
+                    for cell in src_col.iter() {
+                        out.push(transform_value(cell.clone(), plan_entry.member_type));
+                    }
+                    if src_col.len() < row_count {
+                        out.resize(row_count, DBResponsePrimitive::Null);
+                    }
+                } else {
+                    out.resize(row_count, DBResponsePrimitive::Null);
                 }
             }
             ColumnarColumnSource::Constant(v) => {
@@ -644,7 +652,8 @@ pub fn get_vanilla_row(
     plan: &VanillaPlan<'_>,
     query_type: &QueryType,
     query: &NormalizedQuery,
-    db_row: &[DBResponseValue],
+    db_data: &QueryResult,
+    row_idx: usize,
 ) -> Result<IndexMap<String, DBResponsePrimitive>> {
     // +1 to cover the optional tail entry (compareDateRange / blending key).
     let mut row = IndexMap::with_capacity(plan.columns.len() + 1);
@@ -655,7 +664,11 @@ pub fn get_vanilla_row(
         let mut minimal_granularities: HashMap<&str, (u8, DBResponsePrimitive)> = HashMap::new();
 
         for column in &plan.columns {
-            if let Some(value) = db_row.get(column.column_index) {
+            if let Some(value) = db_data
+                .data
+                .get(column.column_index)
+                .and_then(|c| c.get(row_idx))
+            {
                 let transformed_value = transform_value(value.clone(), column.member_type);
                 row.insert(column.member_name.to_string(), transformed_value.clone());
 
@@ -679,7 +692,11 @@ pub fn get_vanilla_row(
         // Fast path: no column needs granularity bookkeeping. Skip the HashMap
         // entirely and move the transformed value straight into the row.
         for column in &plan.columns {
-            if let Some(value) = db_row.get(column.column_index) {
+            if let Some(value) = db_data
+                .data
+                .get(column.column_index)
+                .and_then(|c| c.get(row_idx))
+            {
                 let transformed_value = transform_value(value.clone(), column.member_type);
                 row.insert(column.member_name.to_string(), transformed_value);
             }
@@ -846,10 +863,9 @@ impl TransformedData {
                     query_type,
                     query.time_dimensions.as_ref(),
                 )?;
-                let dataset: Vec<_> = cube_store_result
-                    .rows
-                    .iter()
-                    .map(|row| get_compact_row(&plan, row))
+                let row_count = cube_store_result.row_count;
+                let dataset: Vec<_> = (0..row_count)
+                    .map(|row_idx| get_compact_row(&plan, cube_store_result, row_idx))
                     .collect();
                 Ok(TransformedData::Compact { members, dataset })
             }
@@ -862,7 +878,7 @@ impl TransformedData {
                     query_type,
                     query.time_dimensions.as_ref(),
                 )?;
-                let columns = build_columnar_columns(&plan, &cube_store_result.rows);
+                let columns = build_columnar_columns(&plan, cube_store_result);
                 Ok(TransformedData::Columnar { members, columns })
             }
             _ => {
@@ -872,10 +888,9 @@ impl TransformedData {
                     annotation,
                     query,
                 )?;
-                let dataset: Vec<_> = cube_store_result
-                    .rows
-                    .iter()
-                    .map(|row| get_vanilla_row(&plan, query_type, query, row))
+                let row_count = cube_store_result.row_count;
+                let dataset: Vec<_> = (0..row_count)
+                    .map(|row_idx| get_vanilla_row(&plan, query_type, query, cube_store_result, row_idx))
                     .collect::<Result<Vec<_>>>()?;
                 Ok(TransformedData::Vanilla(dataset))
             }
@@ -2574,11 +2589,7 @@ mod tests {
         let (members_to_alias_map, members) = get_members(
             query_type,
             query,
-            &QueryResult {
-                members: vec![],
-                rows: vec![],
-                columns_pos: IndexMap::new(),
-            },
+            &QueryResult::empty(),
             alias_to_member_name_map,
             annotation,
         )?;
@@ -2616,11 +2627,7 @@ mod tests {
         match get_members(
             query_type,
             query,
-            &QueryResult {
-                members: vec![],
-                rows: vec![],
-                columns_pos: IndexMap::new(),
-            },
+            &QueryResult::empty(),
             alias_to_member_name_map,
             annotation,
         ) {
@@ -2664,11 +2671,7 @@ mod tests {
         let result = get_members(
             query_type,
             query,
-            &QueryResult {
-                members: vec![],
-                rows: vec![],
-                columns_pos: IndexMap::new(),
-            },
+            &QueryResult::empty(),
             alias_to_member_name_map,
             annotation,
         );
@@ -2728,11 +2731,7 @@ mod tests {
         let (members_to_alias_map, members) = get_members(
             query_type,
             query,
-            &QueryResult {
-                members: vec![],
-                rows: vec![],
-                columns_pos: IndexMap::new(),
-            },
+            &QueryResult::empty(),
             alias_to_member_name_map,
             annotation,
         )?;
@@ -2800,11 +2799,7 @@ mod tests {
         let (members_to_alias_map, members) = get_members(
             query_type,
             query,
-            &QueryResult {
-                members: vec![],
-                rows: vec![],
-                columns_pos: IndexMap::new(),
-            },
+            &QueryResult::empty(),
             alias_to_member_name_map,
             annotation,
         )?;
@@ -2886,7 +2881,7 @@ mod tests {
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data.rows[0]);
+        let res = get_compact_row(&plan, &raw_data, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -2935,7 +2930,7 @@ mod tests {
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data.rows[0]);
+        let res = get_compact_row(&plan, &raw_data, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -2984,7 +2979,7 @@ mod tests {
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data.rows[0]);
+        let res = get_compact_row(&plan, &raw_data, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -3012,7 +3007,7 @@ mod tests {
             assert_eq!(res[i], members_map_expected.get(val).unwrap().clone());
         }
 
-        let res = get_compact_row(&plan, &raw_data.rows[1]);
+        let res = get_compact_row(&plan, &raw_data, 1);
 
         let members_map_expected = HashMap::from([
             (
@@ -3074,7 +3069,7 @@ mod tests {
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data.rows[0]);
+        let res = get_compact_row(&plan, &raw_data, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -3120,7 +3115,7 @@ mod tests {
             annotation,
             &query,
         )?;
-        let res = get_vanilla_row(&plan, query_type, &query, &raw_data.rows[0])?;
+        let res = get_vanilla_row(&plan, query_type, &query, &raw_data, 0)?;
         let expected = IndexMap::from([
             (
                 "ECommerceRecordsUs2021.city".to_string(),

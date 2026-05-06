@@ -331,12 +331,14 @@ pub fn get_cubestore_result(mut cx: FunctionContext) -> JsResult<JsValue> {
     let result = cx.argument::<JsBox<Arc<QueryResult>>>(0)?;
 
     let js_array = cx.execute_scoped(|mut cx| {
-        let js_array = JsArray::new(&mut cx, result.rows.len());
+        let row_count = result.row_count;
+        let js_array = JsArray::new(&mut cx, row_count);
 
-        for (i, row) in result.rows.iter().enumerate() {
+        for row_idx in 0..row_count {
             let js_row = cx.execute_scoped(|mut cx| {
                 let js_row = JsObject::new(&mut cx);
-                for (key, value) in result.members.iter().zip(row.iter()) {
+                for (col_idx, key) in result.members.iter().enumerate() {
+                    let value = &result.data[col_idx][row_idx];
                     let js_key = cx.string(key);
                     let js_value: Handle<'_, JsValue> = match value {
                         DBResponseValue::Primitive(DBResponsePrimitive::Null) => cx.null().upcast(),
@@ -349,7 +351,7 @@ pub fn get_cubestore_result(mut cx: FunctionContext) -> JsResult<JsValue> {
                 Ok(js_row)
             })?;
 
-            js_array.set(&mut cx, i as u32, js_row)?;
+            js_array.set(&mut cx, row_idx as u32, js_row)?;
         }
 
         Ok(js_array)
