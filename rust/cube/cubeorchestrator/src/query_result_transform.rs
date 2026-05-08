@@ -326,9 +326,11 @@ pub fn get_members(
 /// [`build_compact_plan`] so the per-row materializer ([`get_compact_row`])
 /// only does the bounds check and [`transform_value`] call.
 pub(crate) enum CompactPlanEntry<'a> {
-    /// Read `db_row[column_index]` and run [`transform_value`].
+    /// Read `col[row_idx]` and run [`transform_value`]. The `col` slice is
+    /// resolved once per request from `db_data.data[column_index]`, so the
+    /// per-cell hot path stays at one bounds-check.
     Cell {
-        column_index: usize,
+        col: &'a [DBResponseValue],
         member_type: &'a str,
     },
     /// Constant value replicated across every row (the
@@ -344,7 +346,7 @@ pub(crate) fn build_compact_plan<'a>(
     members: &[String],
     members_to_alias_map: &IndexMap<String, String>,
     annotation: &'a HashMap<String, ConfigItem>,
-    columns_pos: &IndexMap<String, usize>,
+    db_data: &'a QueryResult,
     query_type: &QueryType,
     time_dimensions: Option<&Vec<QueryTimeDimension>>,
 ) -> Result<CompactPlan<'a>> {
@@ -353,12 +355,14 @@ pub(crate) fn build_compact_plan<'a>(
     for m in members {
         if let Some(annotation_item) = annotation.get(m) {
             if let Some(alias) = members_to_alias_map.get(m) {
-                if let Some(&column_index) = columns_pos.get(alias) {
-                    let member_type = annotation_item.member_type.as_deref().unwrap_or("");
-                    entries.push(CompactPlanEntry::Cell {
-                        column_index,
-                        member_type,
-                    });
+                if let Some(&column_index) = db_data.columns_pos.get(alias) {
+                    if let Some(col) = db_data.data.get(column_index) {
+                        let member_type = annotation_item.member_type.as_deref().unwrap_or("");
+                        entries.push(CompactPlanEntry::Cell {
+                            col: col.as_slice(),
+                            member_type,
+                        });
+                    }
                 }
             }
         }
@@ -373,17 +377,19 @@ pub(crate) fn build_compact_plan<'a>(
         QueryType::BlendingQuery => {
             let blending_key = get_blending_response_key(time_dimensions)?;
             if let Some(alias) = members_to_alias_map.get(&blending_key) {
-                if let Some(&column_index) = columns_pos.get(alias) {
-                    // Preserve the (likely-quirky) lookup at the original
-                    // `get_compact_row`: member_type comes from
-                    // `annotation[alias]`, not `annotation[member]`.
-                    let member_type = annotation
-                        .get(alias)
-                        .map_or("", |a| a.member_type.as_deref().unwrap_or(""));
-                    entries.push(CompactPlanEntry::Cell {
-                        column_index,
-                        member_type,
-                    });
+                if let Some(&column_index) = db_data.columns_pos.get(alias) {
+                    if let Some(col) = db_data.data.get(column_index) {
+                        // Preserve the (likely-quirky) lookup at the original
+                        // `get_compact_row`: member_type comes from
+                        // `annotation[alias]`, not `annotation[member]`.
+                        let member_type = annotation
+                            .get(alias)
+                            .map_or("", |a| a.member_type.as_deref().unwrap_or(""));
+                        entries.push(CompactPlanEntry::Cell {
+                            col: col.as_slice(),
+                            member_type,
+                        });
+                    }
                 }
             }
         }
@@ -394,20 +400,13 @@ pub(crate) fn build_compact_plan<'a>(
 }
 
 /// Convert DB response row to the compact output
-pub fn get_compact_row(
-    plan: &CompactPlan<'_>,
-    db_data: &QueryResult,
-    row_idx: usize,
-) -> Vec<DBResponsePrimitive> {
+pub fn get_compact_row(plan: &CompactPlan<'_>, row_idx: usize) -> Vec<DBResponsePrimitive> {
     let mut row: Vec<DBResponsePrimitive> = Vec::with_capacity(plan.entries.len());
 
     for entry in &plan.entries {
         match entry {
-            CompactPlanEntry::Cell {
-                column_index,
-                member_type,
-            } => {
-                if let Some(value) = db_data.data.get(*column_index).and_then(|c| c.get(row_idx)) {
+            CompactPlanEntry::Cell { col, member_type } => {
+                if let Some(value) = col.get(row_idx) {
                     row.push(transform_value(value.clone(), member_type));
                 }
             }
@@ -424,7 +423,7 @@ pub fn get_compact_row(
 /// Built once and walked per row to avoid redoing hash lookups, annotation checks,
 /// and member-name parsing for every cell.
 pub struct VanillaColumnPlan<'a> {
-    column_index: usize,
+    col: &'a [DBResponseValue],
     member_name: &'a str,
     member_type: &'a str,
     granularity_track: Option<VanillaGranularityTrack<'a>>,
@@ -442,15 +441,15 @@ pub struct VanillaPlan<'a> {
 }
 
 pub fn build_vanilla_plan<'a>(
-    columns_pos: &'a IndexMap<String, usize>,
+    db_data: &'a QueryResult,
     alias_to_member_name_map: &'a HashMap<String, String>,
     annotation: &'a HashMap<String, ConfigItem>,
     query: &NormalizedQuery,
 ) -> Result<VanillaPlan<'a>> {
-    let mut columns = Vec::with_capacity(columns_pos.len());
+    let mut columns = Vec::with_capacity(db_data.columns_pos.len());
     let mut has_granularity_tracking = false;
 
-    for (alias, &index) in columns_pos {
+    for (alias, &index) in &db_data.columns_pos {
         let member_name = match alias_to_member_name_map.get(alias) {
             Some(m) => m.as_str(),
             None => bail!("Missing member name for alias: {}", alias),
@@ -458,6 +457,11 @@ pub fn build_vanilla_plan<'a>(
         ensure_member_in_annotation(member_name, annotation)?;
         let annotation_for_member = annotation.get(member_name).unwrap();
         let member_type = annotation_for_member.member_type.as_deref().unwrap_or("");
+
+        let col = match db_data.data.get(index) {
+            Some(c) => c.as_slice(),
+            None => continue,
+        };
 
         // Handle deprecated time dimensions without granularity.
         // Try to collect minimal granularity value for time dimensions without granularity
@@ -468,7 +472,7 @@ pub fn build_vanilla_plan<'a>(
         }
 
         columns.push(VanillaColumnPlan {
-            column_index: index,
+            col,
             member_name,
             member_type,
             granularity_track,
@@ -646,7 +650,6 @@ pub fn get_vanilla_row(
     plan: &VanillaPlan<'_>,
     query_type: &QueryType,
     query: &NormalizedQuery,
-    db_data: &QueryResult,
     row_idx: usize,
 ) -> Result<IndexMap<String, DBResponsePrimitive>> {
     // +1 to cover the optional tail entry (compareDateRange / blending key).
@@ -658,11 +661,7 @@ pub fn get_vanilla_row(
         let mut minimal_granularities: HashMap<&str, (u8, DBResponsePrimitive)> = HashMap::new();
 
         for column in &plan.columns {
-            if let Some(value) = db_data
-                .data
-                .get(column.column_index)
-                .and_then(|c| c.get(row_idx))
-            {
+            if let Some(value) = column.col.get(row_idx) {
                 let transformed_value = transform_value(value.clone(), column.member_type);
                 row.insert(column.member_name.to_string(), transformed_value.clone());
 
@@ -686,11 +685,7 @@ pub fn get_vanilla_row(
         // Fast path: no column needs granularity bookkeeping. Skip the HashMap
         // entirely and move the transformed value straight into the row.
         for column in &plan.columns {
-            if let Some(value) = db_data
-                .data
-                .get(column.column_index)
-                .and_then(|c| c.get(row_idx))
-            {
+            if let Some(value) = column.col.get(row_idx) {
                 let transformed_value = transform_value(value.clone(), column.member_type);
                 row.insert(column.member_name.to_string(), transformed_value);
             }
@@ -853,13 +848,13 @@ impl TransformedData {
                     &members,
                     &members_to_alias_map,
                     annotation,
-                    &cube_store_result.columns_pos,
+                    cube_store_result,
                     query_type,
                     query.time_dimensions.as_ref(),
                 )?;
                 let row_count = cube_store_result.row_count;
                 let dataset: Vec<_> = (0..row_count)
-                    .map(|row_idx| get_compact_row(&plan, cube_store_result, row_idx))
+                    .map(|row_idx| get_compact_row(&plan, row_idx))
                     .collect();
                 Ok(TransformedData::Compact { members, dataset })
             }
@@ -877,16 +872,14 @@ impl TransformedData {
             }
             _ => {
                 let plan = build_vanilla_plan(
-                    &cube_store_result.columns_pos,
+                    cube_store_result,
                     alias_to_member_name_map,
                     annotation,
                     query,
                 )?;
                 let row_count = cube_store_result.row_count;
                 let dataset: Vec<_> = (0..row_count)
-                    .map(|row_idx| {
-                        get_vanilla_row(&plan, query_type, query, cube_store_result, row_idx)
-                    })
+                    .map(|row_idx| get_vanilla_row(&plan, query_type, query, row_idx))
                     .collect::<Result<Vec<_>>>()?;
                 Ok(TransformedData::Vanilla(dataset))
             }
@@ -2873,11 +2866,11 @@ mod tests {
             &members,
             &members_to_alias_map,
             annotation,
-            &raw_data.columns_pos,
+            &raw_data,
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data, 0);
+        let res = get_compact_row(&plan, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -2922,11 +2915,11 @@ mod tests {
             &members,
             &members_to_alias_map,
             annotation,
-            &raw_data.columns_pos,
+            &raw_data,
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data, 0);
+        let res = get_compact_row(&plan, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -2971,11 +2964,11 @@ mod tests {
             &members,
             &members_to_alias_map,
             annotation,
-            &raw_data.columns_pos,
+            &raw_data,
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data, 0);
+        let res = get_compact_row(&plan, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -3003,7 +2996,7 @@ mod tests {
             assert_eq!(res[i], members_map_expected.get(val).unwrap().clone());
         }
 
-        let res = get_compact_row(&plan, &raw_data, 1);
+        let res = get_compact_row(&plan, 1);
 
         let members_map_expected = HashMap::from([
             (
@@ -3061,11 +3054,11 @@ mod tests {
             &members,
             &members_to_alias_map,
             annotation,
-            &raw_data.columns_pos,
+            &raw_data,
             query_type,
             Some(time_dimensions),
         )?;
-        let res = get_compact_row(&plan, &raw_data, 0);
+        let res = get_compact_row(&plan, 0);
 
         let members_map_expected = HashMap::from([
             (
@@ -3105,13 +3098,8 @@ mod tests {
         let query = test_data.request.query.clone();
         let query_type = &test_data.request.query_type.clone().unwrap_or_default();
 
-        let plan = build_vanilla_plan(
-            &raw_data.columns_pos,
-            alias_to_member_name_map,
-            annotation,
-            &query,
-        )?;
-        let res = get_vanilla_row(&plan, query_type, &query, &raw_data, 0)?;
+        let plan = build_vanilla_plan(&raw_data, alias_to_member_name_map, annotation, &query)?;
+        let res = get_vanilla_row(&plan, query_type, &query, 0)?;
         let expected = IndexMap::from([
             (
                 "ECommerceRecordsUs2021.city".to_string(),
@@ -3141,12 +3129,7 @@ mod tests {
         let annotation = &test_data.request.annotation;
         let query = test_data.request.query.clone();
 
-        match build_vanilla_plan(
-            &raw_data.columns_pos,
-            alias_to_member_name_map,
-            annotation,
-            &query,
-        ) {
+        match build_vanilla_plan(&raw_data, alias_to_member_name_map, annotation, &query) {
             Ok(_) => Err(TestError("build_vanilla_plan() should fail ".to_string()).into()),
             Err(err) => {
                 assert!(err.to_string().contains("Missing member name for alias"));
@@ -3170,12 +3153,7 @@ mod tests {
         let annotation = &test_data.request.annotation;
         let query = test_data.request.query.clone();
 
-        match build_vanilla_plan(
-            &raw_data.columns_pos,
-            alias_to_member_name_map,
-            annotation,
-            &query,
-        ) {
+        match build_vanilla_plan(&raw_data, alias_to_member_name_map, annotation, &query) {
             Ok(_) => Err(TestError("build_vanilla_plan() should fail ".to_string()).into()),
             Err(err) => {
                 assert!(err.to_string().contains("You requested hidden member"));
