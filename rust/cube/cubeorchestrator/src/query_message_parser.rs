@@ -160,8 +160,7 @@ impl QueryResult {
             .collect();
 
         let row_count = columns.first().map(|c| c.len()).unwrap_or(0);
-        // JS already gives us column-major data; wrap each primitive into
-        // `DBResponseValue` per column without re-pivoting.
+        // TODO(ovr): Revisit this, probably, we should drop DBResponseValue wrapper and use DBResponsePrimitive
         let data: Vec<Vec<DBResponseValue>> = columns
             .into_iter()
             .map(|col| col.into_iter().map(DBResponseValue::Primitive).collect())
