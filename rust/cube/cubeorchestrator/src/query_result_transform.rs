@@ -407,11 +407,7 @@ pub fn get_compact_row(
                 column_index,
                 member_type,
             } => {
-                if let Some(value) = db_data
-                    .data
-                    .get(*column_index)
-                    .and_then(|c| c.get(row_idx))
-                {
+                if let Some(value) = db_data.data.get(*column_index).and_then(|c| c.get(row_idx)) {
                     row.push(transform_value(value.clone(), member_type));
                 }
             }
@@ -890,7 +886,9 @@ impl TransformedData {
                 )?;
                 let row_count = cube_store_result.row_count;
                 let dataset: Vec<_> = (0..row_count)
-                    .map(|row_idx| get_vanilla_row(&plan, query_type, query, cube_store_result, row_idx))
+                    .map(|row_idx| {
+                        get_vanilla_row(&plan, query_type, query, cube_store_result, row_idx)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(TransformedData::Vanilla(dataset))
             }
