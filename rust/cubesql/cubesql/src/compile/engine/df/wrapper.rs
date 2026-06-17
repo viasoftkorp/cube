@@ -3063,6 +3063,22 @@ impl WrappedSelectNode {
         ))
     }
 
+    /// Returns the operands of a timestamp/date subtraction `left - right`,
+    /// peeling any cast wrapping the subtraction. Used to rewrite
+    /// `EXTRACT(EPOCH FROM (left - right))` for dialects that don't support
+    /// taking the epoch of an interval.
+    fn timestamp_diff_operands(expr: &Expr) -> Option<(&Expr, &Expr)> {
+        match expr {
+            Expr::BinaryExpr {
+                left,
+                op: Operator::Minus,
+                right,
+            } => Some((left, right)),
+            Expr::Cast { expr, .. } => Self::timestamp_diff_operands(expr),
+            _ => None,
+        }
+    }
+
     #[inline(never)]
     fn generate_sql_for_scalar_function<'ctx>(
         mut sql_query: SqlQuery,
@@ -3123,6 +3139,44 @@ impl WrappedSelectNode {
                                         "Can't generate SQL for scalar function: date part '{}' is not supported",
                                         date_part
                                     )));
+                        }
+                        // Some dialects (e.g. Snowflake) can't EXTRACT(EPOCH FROM <interval>),
+                        // i.e. take the epoch of a timestamp difference `a - b`. When the
+                        // dialect provides a dedicated template, render the difference as a
+                        // diff in seconds instead.
+                        if date_part.eq_ignore_ascii_case("epoch")
+                            && sql_generator
+                                .get_sql_templates()
+                                .contains_template("expressions/extract_epoch_diff")
+                        {
+                            if let Some((left, right)) = Self::timestamp_diff_operands(&args[1]) {
+                                let (left_sql, query) = Self::generate_sql_for_expr(
+                                    sql_query,
+                                    sql_generator.clone(),
+                                    left.clone(),
+                                    push_to_cube_context,
+                                    subqueries,
+                                )?;
+                                let (right_sql, query) = Self::generate_sql_for_expr(
+                                    query,
+                                    sql_generator.clone(),
+                                    right.clone(),
+                                    push_to_cube_context,
+                                    subqueries,
+                                )?;
+                                return Ok((
+                                    sql_generator
+                                        .get_sql_templates()
+                                        .extract_epoch_diff_expr(left_sql, right_sql)
+                                        .map_err(|e| {
+                                            DataFusionError::Internal(format!(
+                                                "Can't generate SQL for scalar function: {}",
+                                                e
+                                            ))
+                                        })?,
+                                    query,
+                                ));
+                            }
                         }
                         let (arg_sql, query) = Self::generate_sql_for_expr(
                             sql_query,
