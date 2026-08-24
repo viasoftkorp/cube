@@ -2,6 +2,7 @@ import { Readable } from 'stream';
 import crypto from 'crypto';
 
 import type { QueryKey, QueueDriverInterface } from '@cubejs-backend/base-driver';
+import { QueuePriority } from '@cubejs-backend/base-driver';
 import { pausePromise } from '@cubejs-backend/shared';
 import { CubeStoreDriver, CubestoreQueueDriverConnection } from '@cubejs-backend/cubestore-driver';
 
@@ -142,9 +143,9 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
     test('priority', async () => {
       const result = await Promise.all([
-        queue.executeInQueue('delay', '11', { delay: 600, result: '1' }, 1),
-        queue.executeInQueue('delay', '12', { delay: 100, result: '2' }, 0),
-        queue.executeInQueue('delay', '13', { delay: 100, result: '3' }, 10)
+        queue.executeInQueue('delay', '11', { delay: 600, result: '1' }, QueuePriority.Warmup),
+        queue.executeInQueue('delay', '12', { delay: 100, result: '2' }, QueuePriority.Background),
+        queue.executeInQueue('delay', '13', { delay: 100, result: '3' }, QueuePriority.Interactive)
       ]);
       expect(parseInt(result.find(f => f[0] === '3'), 10) % 10).toBeLessThan(2);
     });
@@ -184,7 +185,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
     });
 
     test('stage reporting', async () => {
-      const resultPromise = queue.executeInQueue('delay', '1', { delay: 200, result: '1' }, 0, {
+      const resultPromise = queue.executeInQueue('delay', '1', { delay: 200, result: '1' }, QueuePriority.Background, {
         stageQueryKey: '1',
         requestId: '9f056234-aa57-4702-ab30-145221da6a46-span-1',
         spanId: 'span-id'
@@ -196,13 +197,13 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
     });
 
     test('priority stage reporting', async () => {
-      const resultPromise1 = queue.executeInQueue('delay', '31', { delay: 200, result: '1' }, 20, {
+      const resultPromise1 = queue.executeInQueue('delay', '31', { delay: 200, result: '1' }, QueuePriority.Interactive + 10, {
         stageQueryKey: '12',
         requestId: '4274691a-5f4c-480e-89c4-d2b9d989891c-span-1',
         spanId: 'span-id'
       });
       await delayFn(null, 50);
-      const resultPromise2 = queue.executeInQueue('delay', '32', { delay: 200, result: '1' }, 10, {
+      const resultPromise2 = queue.executeInQueue('delay', '32', { delay: 200, result: '1' }, QueuePriority.Interactive, {
         stageQueryKey: '12',
         requestId: '000bce99-b987-4649-ae5e-1178532929f5-span-1',
         spanId: 'span-id'
@@ -217,19 +218,21 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
     test('negative priority', async () => {
       const results = [];
+      // The open range between the named rungs, which is what a scheduled refresh computes
+      const priority = (value: number): QueuePriority => value;
 
-      queue.executeInQueue('delay', '31', { delay: 400, result: '4' }, -10);
+      queue.executeInQueue('delay', '31', { delay: 400, result: '4' }, priority(-10));
 
       await delayFn(null, 200);
 
       await Promise.all([
-        queue.executeInQueue('delay', '32', { delay: 100, result: '3' }, -9).then(r => {
+        queue.executeInQueue('delay', '32', { delay: 100, result: '3' }, priority(-9)).then(r => {
           results.push(['32', r]);
         }),
-        queue.executeInQueue('delay', '33', { delay: 100, result: '2' }, -8).then(r => {
+        queue.executeInQueue('delay', '33', { delay: 100, result: '2' }, priority(-8)).then(r => {
           results.push(['33', r]);
         }),
-        queue.executeInQueue('delay', '34', { delay: 100, result: '1' }, -7).then(r => {
+        queue.executeInQueue('delay', '34', { delay: 100, result: '1' }, priority(-7)).then(r => {
           results.push(['34', r]);
         })
       ]);
@@ -242,10 +245,10 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
     });
 
     test('sequence', async () => {
-      const p1 = queue.executeInQueue('delay', '111', { delay: 50, result: '1' }, 0);
-      const p2 = delayFn(null, 50).then(() => queue.executeInQueue('delay', '112', { delay: 50, result: '2' }, 0));
-      const p3 = delayFn(null, 75).then(() => queue.executeInQueue('delay', '113', { delay: 50, result: '3' }, 0));
-      const p4 = delayFn(null, 100).then(() => queue.executeInQueue('delay', '114', { delay: 50, result: '4' }, 0));
+      const p1 = queue.executeInQueue('delay', '111', { delay: 50, result: '1' }, QueuePriority.Background);
+      const p2 = delayFn(null, 50).then(() => queue.executeInQueue('delay', '112', { delay: 50, result: '2' }, QueuePriority.Background));
+      const p3 = delayFn(null, 75).then(() => queue.executeInQueue('delay', '113', { delay: 50, result: '3' }, QueuePriority.Background));
+      const p4 = delayFn(null, 100).then(() => queue.executeInQueue('delay', '114', { delay: 50, result: '4' }, QueuePriority.Background));
 
       const result = await Promise.all([p1, p2, p3, p4]);
       expect(result).toEqual(['10', '21', '32', '43']);
@@ -256,27 +259,27 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
     test('orphaned', async () => {
       // recover if previous test broken something
       for (let i = 1; i <= 4; i++) {
-        await queue.executeInQueue('delay', `11${i}`, { delay: 50, result: `${i}` }, 0);
+        await queue.executeInQueue('delay', `11${i}`, { delay: 50, result: `${i}` }, QueuePriority.Background);
       }
 
       cancelledQuery = null;
       delayCount = 0;
 
-      let result = queue.executeInQueue('delay', '111', { delay: 800, result: '1' }, 0);
-      delayFn(null, 50).then(() => queue.executeInQueue('delay', '112', { delay: 800, result: '2' }, 0)).catch(e => e);
-      delayFn(null, 75).then(() => queue.executeInQueue('delay', '113', { delay: 800, result: '3' }, 0)).catch(e => e);
+      let result = queue.executeInQueue('delay', '111', { delay: 800, result: '1' }, QueuePriority.Background);
+      delayFn(null, 50).then(() => queue.executeInQueue('delay', '112', { delay: 800, result: '2' }, QueuePriority.Background)).catch(e => e);
+      delayFn(null, 75).then(() => queue.executeInQueue('delay', '113', { delay: 800, result: '3' }, QueuePriority.Background)).catch(e => e);
       // orphaned timeout should be applied
-      delayFn(null, 100).then(() => queue.executeInQueue('delay', '114', { delay: 900, result: '4' }, 0)).catch(e => e);
+      delayFn(null, 100).then(() => queue.executeInQueue('delay', '114', { delay: 900, result: '4' }, QueuePriority.Background)).catch(e => e);
 
       expect(await result).toBe('10');
-      await queue.executeInQueue('delay', '112', { delay: 800, result: '2' }, 0);
+      await queue.executeInQueue('delay', '112', { delay: 800, result: '2' }, QueuePriority.Background);
 
-      result = await queue.executeInQueue('delay', '113', { delay: 900, result: '3' }, 0);
+      result = await queue.executeInQueue('delay', '113', { delay: 900, result: '3' }, QueuePriority.Background);
       expect(result).toBe('32');
 
       await delayFn(null, 500);
       expect(cancelledQuery).toBe('114');
-      await queue.executeInQueue('delay', '114', { delay: 50, result: '4' }, 0);
+      await queue.executeInQueue('delay', '114', { delay: 50, result: '4' }, QueuePriority.Background);
     });
 
     test('orphaned with custom ttl', async () => {
@@ -520,12 +523,12 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
         // Two clients execute the same query concurrently with different requestIds.
         // delay=1500ms > continueWaitTimeout=1s, so both will get ContinueWaitError.
         const clientA = queue
-          .executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+          .executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
             stageQueryKey: query, requestId: '70b0b0a6-60ff-43ee-95ca-b5a3d864879f-span-1', spanId: 'span-A'
           })
           .catch(e => e);
         const clientB = queue
-          .executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+          .executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
             stageQueryKey: query, requestId: '8030e1f2-5e14-4241-9481-46e34d478131-span-1', spanId: 'span-B'
           })
           .catch(e => e);
@@ -539,10 +542,10 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
         // Both clients retry (with new span suffix, same UUID prefix).
         // Both should find the existing result without triggering re-execution.
         const [resultA, resultB] = await Promise.all([
-          queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+          queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
             stageQueryKey: query, requestId: '70b0b0a6-60ff-43ee-95ca-b5a3d864879f-span-2', spanId: 'span-A2'
           }),
-          queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+          queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
             stageQueryKey: query, requestId: '8030e1f2-5e14-4241-9481-46e34d478131-span-2', spanId: 'span-B2'
           }),
         ]);
@@ -571,7 +574,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
         while (Date.now() < deadline) {
           try {
-            result = await queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+            result = await queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
               stageQueryKey: query,
               requestId: `${requestUuid}-span-${spanCounter++}`,
               spanId: `span-${spanCounter}`,
@@ -593,7 +596,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
         // CubeStore supports read-many via external_id, so the result should
         // still be available. Local driver consumes the result on first read.
         if (options.cacheAndQueueDriver === 'cubestore') {
-          const secondResult = await queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, 0, {
+          const secondResult = await queue.executeInQueue('delay', query, { delay: 1500, result: '1' }, QueuePriority.Background, {
             stageQueryKey: query,
             requestId: `${requestUuid}-span-${spanCounter++}`,
             spanId: `span-${spanCounter}`,
@@ -622,7 +625,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
         try {
           const query: QueryKey = ['select * from fast_track', []];
-          const result = await queue.executeInQueue('foo', query, query, 10);
+          const result = await queue.executeInQueue('foo', query, query, QueuePriority.Interactive);
 
           expect(result).toBe('select * from fast_track bar');
           expect(driverQuery.mock.calls.some(([sql]) => sql.startsWith('QUEUE ADD_AND_RETRIEVE'))).toBe(true);
@@ -638,8 +641,8 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
       test('concurrent clients execute the query once', async () => {
         const results = await Promise.all([
-          queue.executeInQueue('delay', 'fast_track_concurrent', { delay: 400, result: '2' }, 10),
-          queue.executeInQueue('delay', 'fast_track_concurrent', { delay: 400, result: '2' }, 10)
+          queue.executeInQueue('delay', 'fast_track_concurrent', { delay: 400, result: '2' }, QueuePriority.Interactive),
+          queue.executeInQueue('delay', 'fast_track_concurrent', { delay: 400, result: '2' }, QueuePriority.Interactive)
         ]);
 
         expect(results).toStrictEqual(['20', '20']);
@@ -651,7 +654,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
 
         try {
           const query: QueryKey = ['select * from slow_track', []];
-          const result = await queue.executeInQueue('foo', query, query, 9);
+          const result = await queue.executeInQueue('foo', query, query, QueuePriority.Interactive - 1);
 
           expect(result).toBe('select * from slow_track bar');
           expect(driverQuery.mock.calls.some(([sql]) => sql.startsWith('QUEUE ADD_AND_RETRIEVE'))).toBe(false);
@@ -669,7 +672,7 @@ export const QueryQueueTest = (name: string, options: QueryQueueTestOptions) => 
           queryKey,
           'delay',
           { isJob: true, orphanedTimeout: undefined },
-          10,
+          QueuePriority.Interactive,
           { queueId, stageQueryKey: `${queueId}`, requestId: `${queueId}` }
         );
 
