@@ -36,7 +36,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { ClickHouseRowStream } from './RowStream';
 import { buildTransformFromMeta, transformRow } from './Transform';
-import { parseType } from './TypeParser';
+import { isOpaqueTypeName, parseType } from './TypeParser';
 import { formatError } from './utils';
 
 const SUPPORTED_BUCKET_TYPES = ['s3'];
@@ -47,7 +47,6 @@ const ClickhouseTypeToGeneric: Record<string, string> = {
   datetime: 'timestamp',
   datetime64: 'timestamp',
   date: 'date',
-  decimal: 'decimal',
   // integers
   int8: 'int',
   int16: 'int',
@@ -84,18 +83,14 @@ const ClickhouseTypeToGeneric: Record<string, string> = {
   time64: 'string',
 };
 
-// Containers and opaque types are handed over as their JSON/string rendering.
-const OPAQUE_TYPES = new Set([
-  'map', 'tuple', 'nested', 'variant', 'dynamic', 'json', 'object',
-  'point', 'ring', 'polygon', 'multipolygon', 'linestring', 'multilinestring',
-]);
-
-// Decimal32/64/128/256 name their precision by width and take only a scale argument.
+// Decimal32/64/128/256 name their precision by width and take only a scale argument. Cube Store
+// keeps a decimal in a Decimal128, so Decimal256's own 76 digits are clamped to the 38 Arrow allows
+// rather than passed on to fail the CREATE TABLE.
 const DECIMAL_WIDTH_PRECISION: Record<string, number> = {
   decimal32: 9,
   decimal64: 18,
   decimal128: 38,
-  decimal256: 76,
+  decimal256: 38,
 };
 
 export interface ClickHouseDriverOptions {
@@ -578,7 +573,7 @@ export class ClickHouseDriver extends BaseDriver implements DriverInterface {
         break;
     }
 
-    if (OPAQUE_TYPES.has(name)) {
+    if (isOpaqueTypeName(name)) {
       return 'text';
     }
 
@@ -594,7 +589,9 @@ export class ClickHouseDriver extends BaseDriver implements DriverInterface {
       return 'text';
     }
 
-    return super.toGenericType(name, precision, scale);
+    // The unmapped name is passed on with its arguments and original casing, so that the Cube Store
+    // CREATE TABLE error names the type ClickHouse reported rather than a truncated form of it.
+    return super.toGenericType(columnType.trim(), precision, scale);
   }
 
   public async createSchemaIfNotExists(schemaName: string): Promise<void> {
