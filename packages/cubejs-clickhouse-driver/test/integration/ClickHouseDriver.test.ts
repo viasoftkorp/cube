@@ -514,6 +514,26 @@ describe('ClickHouseDriver', () => {
     });
   });
 
+  // ClickHouse 25.x turned `output_format_json_quote_64bit_integers` off by default, and an
+  // unquoted 64 bit integer is a JSON number: JSON.parse drops everything past 53 bits.
+  it('keeps every digit of a 64 bit integer', async () => {
+    await doWithDriver(async (driver) => {
+      const query = 'SELECT 9007199254740993::Int64 AS int64, 18446744073709551615::UInt64 AS uint64';
+      const expected = { int64: '9007199254740993', uint64: '18446744073709551615' };
+
+      expect(await driver.query(query, [])).toEqual([expected]);
+
+      const tableData = await driver.stream(query, [], { highWaterMark: 100 });
+
+      try {
+        expect(await streamToArray(tableData.rowStream as any)).toEqual([expected]);
+      } finally {
+        // @ts-ignore
+        await tableData.release();
+      }
+    });
+  });
+
   it('refuses an AggregateFunction state as a column type', async () => {
     await doWithDriver(async (driver) => {
       await expect(driver.queryColumnTypes('test.agg_types_test', []))
