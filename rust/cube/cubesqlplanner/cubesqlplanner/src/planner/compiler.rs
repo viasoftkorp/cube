@@ -187,15 +187,15 @@ impl Compiler {
         let definition = self
             .cube_evaluator
             .segment_by_path(path.member_id().target_path())?;
-        let sql_call = self.compile_sql_call(path.cube_name(), definition.sql()?)?;
+        let sql_call = self.compile_sql_call(path.cube_id(), definition.sql()?)?;
         let alias = self.alias_for_member(&full_name).unwrap_or_else(|| {
             PlanSqlTemplates::member_alias_name(
-                &path.cube_name().to_string(),
+                &path.cube_id().to_string(),
                 path.symbol_name(),
                 &None,
             )
         });
-        let cube_symbol = self.add_cube_table_evaluator(path.cube_name().clone(), vec![])?;
+        let cube_symbol = self.add_cube_table_evaluator(path.cube_id().clone(), vec![])?;
         let symbol = MemberExpressionSymbol::try_new(
             cube_symbol,
             path.symbol_name().clone(),
@@ -213,15 +213,15 @@ impl Compiler {
     /// placeholders. Cached by the normalised path.
     pub fn add_cube_name_evaluator(
         &mut self,
-        cube_name: CubeId,
+        cube_id: CubeId,
         path: Vec<CubeId>,
     ) -> Result<Rc<CubeNameSymbol>, CubeError> {
-        let cache_key = CubeNameSymbol::normalize_path(path.clone(), &cube_name);
+        let cache_key = CubeNameSymbol::normalize_path(path.clone(), &cube_id);
         if let Some(exists) = self.cube_names.get(&cache_key) {
             Ok(exists.clone())
         } else {
             let result =
-                CubeNameSymbolFactory::try_new(&cube_name, self.cube_evaluator.clone(), path)?
+                CubeNameSymbolFactory::try_new(&cube_id, self.cube_evaluator.clone(), path)?
                     .build(self)?;
             self.cube_names.insert(cache_key, result.clone());
             Ok(result)
@@ -232,15 +232,15 @@ impl Compiler {
     /// placeholders. Cached by the normalised path.
     pub fn add_cube_table_evaluator(
         &mut self,
-        cube_name: CubeId,
+        cube_id: CubeId,
         path: Vec<CubeId>,
     ) -> Result<Rc<CubeTableSymbol>, CubeError> {
-        let cache_key = CubeNameSymbol::normalize_path(path.clone(), &cube_name);
+        let cache_key = CubeNameSymbol::normalize_path(path.clone(), &cube_id);
         if let Some(exists) = self.cube_tables.get(&cache_key) {
             Ok(exists.clone())
         } else {
             let result =
-                CubeTableSymbolFactory::try_new(&cube_name, self.cube_evaluator.clone(), path)?
+                CubeTableSymbolFactory::try_new(&cube_id, self.cube_evaluator.clone(), path)?
                     .build(self)?;
             self.cube_tables.insert(cache_key, result.clone());
             Ok(result)
@@ -263,25 +263,25 @@ impl Compiler {
     /// to the given owning cube, via `SqlCallBuilder`.
     pub fn compile_sql_call(
         &mut self,
-        cube_name: &CubeId,
+        cube_id: &CubeId,
         member_sql: Rc<dyn MemberSql>,
     ) -> Result<Rc<SqlCall>, CubeError> {
-        self.compile_sql_call_impl(cube_name, member_sql, false)
+        self.compile_sql_call_impl(cube_id, member_sql, false)
     }
 
     /// Compiles a cube's own `sql`, where a member reference is rejected
     /// rather than resolved.
     pub fn compile_cube_sql_call(
         &mut self,
-        cube_name: &CubeId,
+        cube_id: &CubeId,
         member_sql: Rc<dyn MemberSql>,
     ) -> Result<Rc<SqlCall>, CubeError> {
-        self.compile_sql_call_impl(cube_name, member_sql, true)
+        self.compile_sql_call_impl(cube_id, member_sql, true)
     }
 
     fn compile_sql_call_impl(
         &mut self,
-        cube_name: &CubeId,
+        cube_id: &CubeId,
         member_sql: Rc<dyn MemberSql>,
         is_cube_sql: bool,
     ) -> Result<Rc<SqlCall>, CubeError> {
@@ -296,7 +296,7 @@ impl Compiler {
         } else {
             call_builder
         };
-        let sql_call = call_builder.build(cube_name, member_sql.clone())?;
+        let sql_call = call_builder.build(cube_id, member_sql.clone())?;
         Ok(Rc::new(sql_call))
     }
 
