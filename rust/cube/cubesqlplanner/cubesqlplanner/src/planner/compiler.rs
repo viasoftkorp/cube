@@ -186,7 +186,7 @@ impl Compiler {
         let full_name = path.full_name();
         let definition = self
             .cube_evaluator
-            .segment_by_path(path.member_id().target_path())?;
+            .segment_by_path(path.member_id()?.target_path())?;
         let sql_call = self.compile_sql_call(path.cube_id(), definition.sql()?)?;
         let alias = self.alias_for_member(&full_name).unwrap_or_else(|| {
             PlanSqlTemplates::member_alias_name(
