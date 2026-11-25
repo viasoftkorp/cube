@@ -466,7 +466,12 @@ A publication target connects to Databricks with its data source's connection un
 connection of its own. To publish staging and production to different Databricks workspaces, give
 production its own connection:
 
-{/* TODO: screenshot — a target's Databricks connection section with Use a separate connection on and the credential fields showing, on a data source with an env-defined connection */}
+<Frame>
+  <img
+    src="https://static.cube.dev/docs/integrations/databricks-metric-views/target-separate-connection.png"
+    alt="Databricks Metric View sync card with the production target picked and the Use a separate connection switch on, showing the Server hostname, HTTP path, OAuth client ID, OAuth client secret and Default catalog fields"
+  />
+</Frame>
 
 1. In the other workspace, create a
    [service principal with an OAuth secret](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
