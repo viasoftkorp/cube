@@ -18,7 +18,7 @@ account, apply across all devices, and don't affect other users in the account.
 | New message scrolling | Automatically scroll to new messages in chat | On |
 | Alternating row colors | Highlight alternating rows in data tables | Off |
 | Default deployment | Open this deployment when you go to Cube without one in the URL | Account default |
-| Notifications | Choose whether alert, comment, sharing, access-request, dashboard review and dbt sync review notifications also arrive by email | On |
+| Notifications | Choose whether alert, comment, report delivery, sharing, access-request, dashboard review and dbt sync review notifications also arrive by email | On |
 
 ## Language
 
@@ -84,16 +84,17 @@ deployment. The control is hidden on accounts with only one reachable deployment
 
 ## Notifications
 
-These switches control email only. Alerts, mentions, replies, shares, access
-requests, dashboard reviews and dbt syncs ready to review arrive in your
+These switches control email only. Alerts, mentions, replies, report
+deliveries, shares, access requests, dashboard reviews and dbt syncs ready to
+review arrive in your
 [inbox][ref-inbox] whatever you choose here. In the **Notifications** section of
 the **Preferences** page, choose which of them also arrive by email. Only admins
 see the **Model syncs** switch, since only admins get these notifications:
 
 <Frame>
   <img
-    src="https://static.cube.dev/docs/preferences/notifications/notifications-section-v3.png"
-    alt="Notifications section of the Preferences page with email switches for alerts, mentions, replies, model syncs, shares, access requests and dashboard reviews, and the Skip email if already read switch"
+    src="https://static.cube.dev/docs/preferences/notifications/notifications-section-v4.png"
+    alt="Notifications section of the Preferences page with email switches for alerts, mentions, replies, report deliveries, model syncs, shares, access requests and dashboard reviews, and the Skip email if already read switch"
   />
 </Frame>
 
@@ -102,6 +103,7 @@ see the **Model syncs** switch, since only admins get these notifications:
 | Alerts | An [alert][ref-alerts] or a [budget][ref-budgets] that lists you as a recipient fires or resolves | On |
 | Mentions in comments | Someone [mentions you][ref-mentions] in a dashboard comment | On |
 | Replies to comments | Someone replies [in a comment thread][ref-replies] you wrote in | On |
+| Report deliveries | A [report delivery][ref-report-deliveries] you own fails or starts working again, and the delivery has **Email** notifications on. As an admin, also when a delivery can't write to its spreadsheet | On |
 | Model syncs | A [dbt sync][ref-dbt-review] that a webhook started has changes ready to review, and the dbt project has no notification list. Admins only | On |
 | Shared with you | Someone [shares][ref-sharing] a workbook, a folder, or a chat with you, or approves your access request | On |
 | Access requests | Someone [requests access][ref-request-access] to an item you can share, or declines your request | On |
@@ -125,8 +127,7 @@ the item.
 The Alerts switch applies only to you. An email address on an alert or a budget
 that doesn't belong to a Cube user keeps getting its email.
 
-End-of-support notices, scheduled tasks and
-[report deliveries][ref-report-deliveries] send their own email, as set up on
+End-of-support notices and scheduled tasks send their own email, as set up on
 each of them, and have no switch here.
 
 [ref-inbox]: /docs/inbox
